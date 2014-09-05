@@ -63,17 +63,17 @@ class GmailApi():
         self.gmail_service = build('gmail', 'v1', http=self.http)
 
     def get_daily(self):
-        self._get_daily_counts(self.DAILY_QUERIES, self._get_after_daily_query())
+        print "Gathering daily query data"
+        self._get_daily_counts(self.DAILY_QUERIES, self._get_after_query())
 
     def get_hourly(self):
+        print "Gathering hourly query data"
         self._get_hourly_counts(self.HOURLY_QUERIES, self._get_before_query(), self._get_after_query())
 
     def _get_daily_counts(self, queries, after):
         full_dict = dict()
         full_dict = self._a_query(full_dict, queries['a2'], after, 'a2')
         full_dict = self._a_query(full_dict, queries['a1'], after, 'a1')
-        # print full_dict
-        # print len(full_dict)
         self._save_daily_csv(full_dict)
 
     def _save_daily_csv(self, full_dict):
@@ -84,37 +84,28 @@ class GmailApi():
             date = self._get_yesterday()
             for uid in full_dict:
                 csvwriter.writerow([uid, full_dict[uid]['a1'], full_dict[uid]['a2'], date])
-                # print "{0},{1},{2}".format(uid, full_dict[uid]['a1'], full_dict[uid]['a2'])
         with open(filename, 'r') as csvreadfile:
             csvreader = csv.reader(csvreadfile, delimiter=',')
             for row in csvreader:
                 csvlist.append(row)
-            # csvlist = list(csvreader)
-        # print csvlist
         with open(filename, 'w') as csvsorted:
             csvsortwriter = csv.writer(csvsorted)
-            # sortlist = csvlist.sort(key=lambda x: x[0])
             sortlist = sorted(csvlist, key=lambda x: int(x[0]))
             csvsortwriter.writerow(["userid", "dc(msgid)", "total_volume", "date"])
             csvsortwriter.writerows(sortlist)
 
     def _a_query(self, full_dict, query, after, query_key):
-        # print queries[query]
         message_list = []            
         full_query = "{0}{1}".format(query, after)
-        # print full_query
         response = self.gmail_service.users().messages().list(userId='me', q=full_query).execute()
         if 'messages' in response:
             message_list.extend(response['messages'])
             for message in message_list:
                 content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
-                # print content
                 for part in content['payload']['parts']:
                     if part['mimeType'] == 'text/csv':
                         attachmentId = part['body']['attachmentId']
-                # print attachmentId
                 content = self.gmail_service.users().messages().attachments().get(userId='me', messageId=message['id'], id=attachmentId).execute()
-                # print content
                 file_data = base64.urlsafe_b64decode(content['data'].encode('UTF-8'))
                 split_data = file_data.split('\r\n')
                 full_dict = self._a_line_split(full_dict, split_data, query_key)
@@ -162,13 +153,10 @@ class GmailApi():
             response = self.gmail_service.users().messages().list(userId='me', q=full_query).execute()
             if 'messages' in response:
                 message_list.extend(response['messages'])
-                print "Running query {0}".format(query)
                 for message in message_list:
                     content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='raw').execute()
                     if query == 'e':
                         count_dict[count] = self._e_query_count(content)
-                    # elif query == 'a1':
-                    #     self._a1_query_count(content)
                     else:
                         count_dict[count] = self._other_query_count(content)
                     count -= 1
@@ -181,42 +169,28 @@ class GmailApi():
         with open(filename, 'w') as csvwritefile:
             csvwriter = csv.writer(csvwritefile)
             header_list = [
-                'hour_timestamp', 'one_mailchannels_content_filter', 'total_mailchannels_verdicts', 
+                'date', 'hour_timestamp', 'one_mailchannels_content_filter', 'total_mailchannels_verdicts', 
                 'cloudmark_spam_verdicts', 'commtouch_spam_verdicts', 'eleven_spam_verdicts', 
                 'vaderetro_spam_verdicts', 'ivm_spam_verdicts', 'sendgrid_spam_verdicts', 
                 'spamhaus_spam_verdicts', 'surbl_spam_verdicts', 'one_or_more_uriblacklist_hit', 
                 'ivm_unique_urls', 'sendgrid_unique_urls', 'spamhaus_unique_urls', 
                 'surbl_unique_urls', 'total_processed_messages', 'two_or_more_uriblacklist_hits'
             ]
-            # header_list = [
-            #     'hour_timestamp', 'total_mailchannels_verdicts', 
-            #     'cloudmark_spam_verdicts', 'commtouch_spam_verdicts', 'eleven_spam_verdicts', 
-            #     'vaderetro_spam_verdicts', 'ivm_spam_verdicts', 'sendgrid_spam_verdicts', 
-            #     'spamhaus_spam_verdicts', 'surbl_spam_verdicts', 'one_or_more_uriblacklist_hit', 
-            #     'ivm_unique_urls', 'sendgrid_unique_urls', 'spamhaus_unique_urls', 
-            #     'surbl_unique_urls', 'total_processed_messages', 'two_or_more_uriblacklist_hits'
-            # ]
             csvwriter.writerow(header_list)
             date = self._get_yesterday()
             hour = 1
             while hour < 25:
-                hour_list = [hour]
+                hour_list = [date, hour]
                 query_list = ['a1', 'a2', 'b1', 'b2', 'b3', 'b4', 'c1', 'c2', 'c3', 'c4', 'd', 'e', 'f', 'g']
-                # use above query_list when a1 reports are generated for a full day
-                # query_list = ['a2', 'b1', 'b2', 'b3', 'b4', 'c1', 'c2', 'c3', 'c4', 'd', 'e', 'f', 'g']
                 bl_list = ["ivm", "sendgrid", "spamhaus", "surbl"]
                 for query in query_list:
-                    print query
-                    print full_dict[query]
                     if query == 'e':
                         for bl in bl_list:
                             hour_list.append(full_dict[query][hour][bl])
                     else:
                         hour_list.append(full_dict[query][hour])
                 hour += 1
-                print hour_list
                 csvwriter.writerow(hour_list)
-        # print full_dict
 
     def _e_query_count(self, content):
         e_dict = dict()
@@ -254,16 +228,11 @@ class GmailApi():
         split_message = text_plain.split('\n')
         return split_message
 
-    def _get_after_daily_query(self):
-        return " after:{0}".format(self._get_yesterday())
-
     def _get_after_query(self):
         return " after:{0}".format(self._get_yesterday())
-        # return " after:{0}".format(self._get_two_days_ago())
 
     def _get_before_query(self):
         return " before:{0}".format(self._get_today())
-        # return " before:{0}".format(self._get_yesterday())
 
     def _get_today(self):
         return (date.today())
@@ -279,7 +248,7 @@ class GmailApi():
 
 def main():
     gmail = GmailApi()
-    gmail.get_hourly()
+    # gmail.get_hourly()
     gmail.get_daily()
 
 if __name__ == "__main__":
