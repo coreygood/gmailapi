@@ -11,6 +11,8 @@ import base64
 import email
 import csv
 import operator
+import re
+from HTMLParser import HTMLParser
 
 class GmailApi():
     # Path to the client_secret.json file downloaded from the Developer Console
@@ -46,6 +48,8 @@ class GmailApi():
         ('a2', 'label:_gooddata subject:A2 Daily')
     ])
 
+    FBL_QUERY = "label:_google-fbl"
+
     def __init__(self):
         # Start the OAuth flow to retrieve credentials
         self.flow = flow_from_clientsecrets(self.CLIENT_SECRET_FILE, scope=self.OAUTH_SCOPE)
@@ -69,6 +73,10 @@ class GmailApi():
     def get_hourly(self):
         print "Gathering hourly query data"
         self._get_hourly_counts(self.HOURLY_QUERIES, self._get_before_query(), self._get_after_query())
+
+    def get_fbl(self):
+        print "Gathering FBL data"
+        self._get_fbl_data("{0}{1}".format(self.FBL_QUERY, self._fbl_after_query()))
 
     def _get_daily_counts(self, queries, after):
         full_dict = dict()
@@ -228,11 +236,31 @@ class GmailApi():
         split_message = text_plain.split('\n')
         return split_message
 
+    def _get_fbl_data(self, query):
+        message_list = []
+        response = self.gmail_service.users().messages().list(userId='me', q=query).execute()
+        if 'messages' in response:
+            message_list.extend(response['messages'])
+            for message in message_list:
+                content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+                for part in content['payload']['parts']:
+                    if part['mimeType'] == 'text/html':
+                        text_html = base64.urlsafe_b64decode(part['body']['data'].encode('UTF-8'))
+                        parser = MyParser()
+                        parser.feed(text_html)
+                        parser.output()
+                        parser.save_csv()
+        else:
+            print "No Gmail FBL Message Found."
+
     def _get_after_query(self):
         return " after:{0}".format(self._get_yesterday())
 
     def _get_before_query(self):
         return " before:{0}".format(self._get_today())
+
+    def _fbl_after_query(self):
+        return " after:{0}".format(self._get_today())
 
     def _get_today(self):
         return (date.today())
@@ -246,10 +274,56 @@ class GmailApi():
     def _subtract_days(self, num_days):
         return (self._get_today() - timedelta(days=num_days)).strftime("%Y/%m/%d")
 
+class MyParser(HTMLParser):
+
+    headers = ['date', 'spam_rate', 'userid', 'identifier']
+    entries = []
+    dict = dict()
+    index = 0
+    date = (date.today() - timedelta(days=2)).strftime("%m-%d-%Y")
+
+    def handle_data(self, data):
+        if self.index < 3:
+            self.index += 1
+        elif self.index % 3 == 0:
+            if data == self.date:
+                self.dict[self.headers[0]] = data
+                self.index += 1
+            else:
+                print data
+                self.dict = self.entries.pop()
+                self.dict[self.headers[3]] += ' {0}'.format(data)
+                self.entries.append(self.dict)
+                self.dict = dict()
+        elif self.index % 3 == 1:
+            self.dict[self.headers[1]] = data
+            self.index += 1
+        elif self.index % 3 == 2:
+            if '+' in data:
+                split = data.split('+')
+                self.dict[self.headers[2]] = split[0]
+                self.dict[self.headers[3]] = split[1]
+            else:
+                self.dict[self.headers[2]] = data
+                self.dict[self.headers[3]] = ''
+            self.index += 1
+            self.entries.append(self.dict)
+            self.dict = dict()
+
+    def save_csv(self):
+        filename = '/Users/coreygood/Documents/GoodData/googlefbl.csv'
+        csvlist = []
+        with open(filename, 'w') as csvwritefile:
+            csvwriter = csv.writer(csvwritefile)
+            csvwriter.writerow(self.headers)
+            for entry in self.entries:
+                csvwriter.writerow([entry[self.headers[0]], entry[self.headers[1]], entry[self.headers[2]], entry[self.headers[3]]])
+
 def main():
     gmail = GmailApi()
-    # gmail.get_hourly()
+    gmail.get_hourly()
     gmail.get_daily()
+    gmail.get_fbl()
 
 if __name__ == "__main__":
     main()
