@@ -6,6 +6,7 @@ from apiclient.discovery import build
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
 from oauth2client.tools import run
+import datetime
 from datetime import date, timedelta
 import base64
 import email
@@ -48,7 +49,19 @@ class GmailApi():
         ('a2', 'label:_gooddata subject:A2 Daily')
     ])
 
-    FBL_QUERY = "label:_google-fbl"
+    FBL_QUERY = 'label:_google-fbl'
+
+    NEWSLETTER_HOURLY_QUERIES = dict([
+        ('spam', 'label:_gooddata subject:Newsletter Spam Hourly'),
+        ('total', 'label:_gooddata subject:Newsletter Total Messages Hourly')
+    ])
+
+    NEWSLETTER_DAILY_QUERIES = dict([
+        ('spam', 'label:_gooddata subject:Newsletter Spam Daily'),
+        ('total', 'label:_gooddata subject:Newsletter Total Messages Daily')
+    ])
+
+    SFV_QUERY = 'label:sfv_strangeness to: support-info@sendgrid.com'
 
     def __init__(self):
         # Start the OAuth flow to retrieve credentials
@@ -72,11 +85,53 @@ class GmailApi():
 
     def get_hourly(self):
         print "Gathering hourly query data"
-        self._get_hourly_counts(self.HOURLY_QUERIES, self._get_before_query(), self._get_after_query())
+        self._get_hourly_counts(self.HOURLY_QUERIES, self._get_before_query(), self._get_after_query(), False)
 
-    def get_fbl(self):
+    def get_daily_fbl(self, days=0):
         print "Gathering FBL data"
-        self._get_fbl_data("{0}{1}".format(self.FBL_QUERY, self._fbl_after_query()))
+        self._get_fbl_data("{0}{1}".format(self.FBL_QUERY, self._fbl_after_query(days)), days)
+
+    def get_historical_fbl(self):
+        print "Gathering Historical FBL data"
+        self._get_historical_fbl_data(self.FBL_QUERY)
+
+    def get_newsletter_hourly(self):
+        print "Gathering Newsletter hourly data"
+        self._get_hourly_counts(self.NEWSLETTER_HOURLY_QUERIES, self._get_before_query(), self._get_after_query(), True)
+
+    def get_newsletter_daily(self):
+        print "Gathering Newsletter daily data"
+        self._get_newsletter_daily_counts(self.NEWSLETTER_DAILY_QUERIES, self._fbl_after_query(1))
+
+    def get_sfv_all_time(self):
+        print "Gathering SFV data"
+        self._get_sfv_data(self.SFV_QUERY)
+
+    def _get_sfv_data(self, query):
+        message_list = []
+        # count = 1
+        response = self.gmail_service.users().messages().list(userId='me', q=query).execute()
+        # print response
+        if 'messages' in response:
+            message_list.extend(response['messages'])
+        for message in message_list:
+            content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+            # print "{0}: {1}".format(count, content['payload']['headers'])
+            # count += 1
+            date = ""
+            for part in content['payload']['headers']:
+                if part['name'] == 'Subject':
+                    print "{0};{1}".format(date, part['value'])
+                    continue
+                elif part['name'] == 'Date':
+                    date = part['value']
+                # if part['value'] == 'support-info@sendgrid.com':
+                #     for p in content['payload']['headers']:
+                #         if p['name'] == 'Subject':
+                #             print p['value']
+                #             continue
+                # else:
+                #     continue
 
     def _get_daily_counts(self, queries, after):
         full_dict = dict()
@@ -84,8 +139,19 @@ class GmailApi():
         full_dict = self._a_query(full_dict, queries['a1'], after, 'a1')
         self._save_daily_csv(full_dict)
 
+    def _get_newsletter_daily_counts(self, queries, after):
+        full_dict = dict()
+        for key in queries.keys():
+            full_dict = self._a_query(full_dict, queries[key], after, key)
+        self._save_newsletter_daily_csv(full_dict)
+
+    def _get_date_for_save(self):
+        today = date.today()
+        return "{0}/{1}/{2}".format(today.year, today.month, today.day)
+
     def _save_daily_csv(self, full_dict):
-        filename = '/Users/coreygood/Documents/GoodData/InternalSpamDaily.csv'
+        today = self._get_date_for_save()
+        filename = "/Users/coreygood/Documents/GoodData/archive/{0}/InternalSpamDaily.csv".format(today)
         csvlist = []
         with open(filename, 'w') as csvwritefile:
             csvwriter = csv.writer(csvwritefile)
@@ -102,14 +168,35 @@ class GmailApi():
             csvsortwriter.writerow(["userid", "dc(msgid)", "total_volume", "date"])
             csvsortwriter.writerows(sortlist)
 
+    def _save_newsletter_daily_csv(self, full_dict):
+        today = self._get_date_for_save()
+        filename = "/Users/coreygood/Documents/GoodData/archive/{0}/NLSpamDaily.csv".format(today)
+        csvlist = []
+        with open(filename, 'w') as csvwritefile:
+            csvwriter = csv.writer(csvwritefile)
+            date = self._get_yesterday()
+            for uid in full_dict:
+                csvwriter.writerow([uid, full_dict[uid]['spam'], full_dict[uid]['total'], date])
+        with open(filename, 'r') as csvreadfile:
+            csvreader = csv.reader(csvreadfile, delimiter=',')
+            for row in csvreader:
+                csvlist.append(row)
+        with open(filename, 'w') as csvsorted:
+            csvsortwriter = csv.writer(csvsorted)
+            sortlist = sorted(csvlist, key=lambda x: int(x[0]))
+            csvsortwriter.writerow(["userid", "spam messages", "total messages", "date"])
+            csvsortwriter.writerows(sortlist)
+
     def _a_query(self, full_dict, query, after, query_key):
         message_list = []            
         full_query = "{0}{1}".format(query, after)
+        print full_query
         response = self.gmail_service.users().messages().list(userId='me', q=full_query).execute()
         if 'messages' in response:
             message_list.extend(response['messages'])
             for message in message_list:
                 content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+                print content
                 for part in content['payload']['parts']:
                     if part['mimeType'] == 'text/csv':
                         attachmentId = part['body']['attachmentId']
@@ -129,6 +216,10 @@ class GmailApi():
             split = line.split(',')
             if query_key == 'a2':
                 full_dict = self._a2_add_dict(full_dict, split, query_key)
+            elif query_key == 'total':
+                full_dict = self._total_add_dict(full_dict, split, query_key)
+            elif query_key == 'spam':
+                full_dict = self._spam_add_dict(full_dict, split, query_key)
             else:
                 full_dict = self._a1_add_dict(full_dict, split, query_key)
             i += 1
@@ -151,16 +242,44 @@ class GmailApi():
         full_dict[split[0]] = count_dict
         return full_dict
 
-    def _get_hourly_counts(self, queries, before, after):
+
+    def _total_add_dict(self, full_dict, split, query_key):
+        count_dict = dict()
+        count_dict['total'] = split[1]
+        count_dict['spam'] = 0
+        full_dict[split[0]] = count_dict
+        return full_dict
+
+    def _spam_add_dict(self, full_dict, split, query_key):
+        if split[0] in full_dict:
+            count_dict = full_dict[split[0]]
+        else:
+            count_dict = dict()
+            count_dict['total'] = 0
+        count_dict['spam'] = split[1]
+        full_dict[split[0]] = count_dict
+        return full_dict
+
+    def _get_hourly_counts(self, queries, before, after, news_bool):
         full_dict = dict()
         for query in queries:
             message_list = []
             count = 24
             count_dict = dict()
+
+            # in case an alert does not send, uncomment and fill in the following three values
+            # missed_hour = 14 # hour of alert that didn't send
+            # missed_amount = 3868 # total from the alert that didn't send
+            # missed_query = 'spam' # query from alert that didn't send; should be 'spam' or 'total'
+
             full_query = "{0}{1}{2}".format(queries[query], before, after)
             response = self.gmail_service.users().messages().list(userId='me', q=full_query).execute()
+
             if 'messages' in response:
                 message_list.extend(response['messages'])
+                # Uncomment if an alert does not send
+                # if query == missed_query:
+                #     count_dict[missed_hour] = missed_amount
                 for message in message_list:
                     content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='raw').execute()
                     if query == 'e':
@@ -168,11 +287,18 @@ class GmailApi():
                     else:
                         count_dict[count] = self._other_query_count(content)
                     count -= 1
+                    # Uncomment if an alert does not send
+                    # if count == missed_hour and query == missed_query:
+                    #     count -= 1
             full_dict[query] = count_dict
-        self._save_hourly_csv(full_dict)
+        if news_bool:
+            self._save_newsletter_hourly_csv(full_dict)
+        else:
+            self._save_hourly_csv(full_dict)
 
     def _save_hourly_csv(self, full_dict):
-        filename = '/Users/coreygood/Documents/GoodData/InternalSpamHourly.csv'
+        today = self._get_date_for_save()
+        filename = "/Users/coreygood/Documents/GoodData/archive/{0}/InternalSpamHourly.csv".format(today)
         csvlist = []
         with open(filename, 'w') as csvwritefile:
             csvwriter = csv.writer(csvwritefile)
@@ -200,6 +326,26 @@ class GmailApi():
                 hour += 1
                 csvwriter.writerow(hour_list)
 
+    def _save_newsletter_hourly_csv(self, full_dict):
+        today = self._get_date_for_save()
+        filename = "/Users/coreygood/Documents/GoodData/archive/{0}/NLSpamHourly.csv".format(today)
+        csvlist = []
+        with open(filename, 'w') as csvwritefile:
+            csvwriter = csv.writer(csvwritefile)
+            header_list = [
+                'date', 'hour_timestamp', 'spam', 'total'
+            ]
+            csvwriter.writerow(header_list)
+            date = self._get_yesterday()
+            hour = 1
+            while hour < 25:
+                hour_list = [date, hour]
+                query_list = ['spam', 'total']
+                for query in query_list:
+                    hour_list.append(full_dict[query][hour])
+                hour += 1
+                csvwriter.writerow(hour_list)
+
     def _e_query_count(self, content):
         e_dict = dict()
         split_message = self._split_message(content)
@@ -220,9 +366,14 @@ class GmailApi():
 
     def _other_query_count(self, content):
         split_message = self._split_message(content)
+        # print split_message
         match = [entry for entry in split_message if "count" in entry]
-        count_index = split_message.index(match[0])
-        count = split_message[count_index+2].strip()
+        if match:
+            count_index = split_message.index(match[0])
+            count = split_message[count_index+2].strip()
+        else:
+            count = 0
+        # print count
         return count
 
     def _split_message(self, content):
@@ -236,7 +387,7 @@ class GmailApi():
         split_message = text_plain.split('\n')
         return split_message
 
-    def _get_fbl_data(self, query):
+    def _get_fbl_data(self, query, days):
         message_list = []
         response = self.gmail_service.users().messages().list(userId='me', q=query).execute()
         if 'messages' in response:
@@ -247,11 +398,55 @@ class GmailApi():
                     if part['mimeType'] == 'text/html':
                         text_html = base64.urlsafe_b64decode(part['body']['data'].encode('UTF-8'))
                         parser = MyParser()
+                        parser.initialize(self._get_today())
                         parser.feed(text_html)
-                        parser.output()
-                        parser.save_csv()
+                        parser.save_csv(days)
         else:
             print "No Gmail FBL Message Found."
+
+    def _get_historical_fbl_data(self, query):
+        # cur_date = self._get_today()
+        cur_date = datetime.date(2014, 10, 02)
+        self.all_entries = []
+        while self._strftime_fbl_data(cur_date) > '09-14-2014':
+            full_query = "{0}{1}".format(query, self._fbl_historical_query(cur_date))
+            print "On date: {0}".format(cur_date)
+            # print full_query
+            # cur_entries = self._get_fbl(full_query, cur_date)
+            self._get_fbl(full_query, cur_date)
+            # print cur_entries
+            # if cur_entries:
+            #     all_entries.append(cur_entries)
+                # self._save_historical_fbl_csv(cur_entries, first)
+            # print "\n\n"
+            # decrement date
+            cur_date = self._subtract_one_day_fbl(cur_date)
+            # print all_entries
+        # print self.all_entries
+        self._save_historical_fbl_csv(self.all_entries)
+
+    def _get_fbl(self, query, current_date):
+        message_list = []
+        response = self.gmail_service.users().messages().list(userId='me', q=query).execute()
+        if 'messages' in response:
+            message_list.extend(response['messages'])
+            for message in message_list:
+                content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+                for part in content['payload']['parts']:
+                    if part['mimeType'] == 'text/html':
+                        text_html = base64.urlsafe_b64decode(part['body']['data'].encode('UTF-8'))
+                        parser = MyParser()
+                        parser.initialize(current_date)
+                        # parser.clear_entries()
+                        # parser.set_date(current_date)
+                        parser.feed(text_html)
+                        entries = parser.get_entries()
+                        if entries:
+                            self.all_entries.append(entries)
+                        # return entries
+        else:
+            print "No Gmail FBL Message Found on {0}.".format(current_date)
+            return None
 
     def _get_after_query(self):
         return " after:{0}".format(self._get_yesterday())
@@ -259,8 +454,18 @@ class GmailApi():
     def _get_before_query(self):
         return " before:{0}".format(self._get_today())
 
-    def _fbl_after_query(self):
-        return " after:{0}".format(self._get_today())
+    def _fbl_after_query(self, days):
+        return " after:{0}".format(self._subtract_days(int(days)))
+
+    def _fbl_historical_query(self, current_date):
+        before_date = self._subtract_days_from_current_date(current_date, -1)
+        return " before:{0} after:{1}".format(self._strftime_gmail_search(before_date), self._strftime_gmail_search(current_date))
+
+    def _strftime_gmail_search(self, date):
+        return date.strftime('%Y-%m-%d')
+
+    def _strftime_fbl_data(self, date):
+        return date.strftime('%m-%d-%Y')
 
     def _get_today(self):
         return (date.today())
@@ -272,25 +477,45 @@ class GmailApi():
         return self._subtract_days(2)
 
     def _subtract_days(self, num_days):
-        return (self._get_today() - timedelta(days=num_days)).strftime("%Y/%m/%d")
+        return (self._get_today() - timedelta(days=num_days)).strftime('%Y/%m/%d')
+
+    def _subtract_one_day_fbl(self, current_date):
+        return self._subtract_days_from_current_date(current_date, 1)
+
+    def _subtract_days_from_current_date(self, current_date, num_days):
+        return (current_date - timedelta(days=num_days))#.strftime("%m-%d-%Y")
+
+    def _save_historical_fbl_csv(self, all_entries):
+        filename = '/Users/coreygood/Documents/GoodData/googlefbl.csv'
+        headers = ['date', 'spam_rate', 'userid', 'campaign']
+        with open(filename, 'w') as csvwritefile:
+            csvwriter = csv.writer(csvwritefile)
+            csvwriter.writerow(headers)
+            for daily_entries in all_entries:
+                for entry in daily_entries:
+                    csvwriter.writerow([entry[headers[0]], entry[headers[1]], entry[headers[2]], entry[headers[3]]])
 
 class MyParser(HTMLParser):
 
-    headers = ['date', 'spam_rate', 'userid', 'identifier']
-    entries = []
-    dict = dict()
-    index = 0
-    date = (date.today() - timedelta(days=2)).strftime("%m-%d-%Y")
+    def initialize(self, date):
+        self.headers = ['date', 'spam_rate', 'userid', 'campaign']
+        self.entries = []
+        self.dict = dict()
+        self.index = 0
+        self.date = (date - timedelta(days=1)).strftime('%m-%d-%Y')
 
     def handle_data(self, data):
+        # print data
         if self.index < 3:
             self.index += 1
         elif self.index % 3 == 0:
-            if data == self.date:
+            # print "len:{0}, data:'{1}'".format(len(data), data)
+            # print self.is_date(data)
+            # if data == self.date:
+            if self.is_date(data):
                 self.dict[self.headers[0]] = data
                 self.index += 1
             else:
-                print data
                 self.dict = self.entries.pop()
                 self.dict[self.headers[3]] += ' {0}'.format(data)
                 self.entries.append(self.dict)
@@ -310,8 +535,27 @@ class MyParser(HTMLParser):
             self.entries.append(self.dict)
             self.dict = dict()
 
-    def save_csv(self):
-        filename = '/Users/coreygood/Documents/GoodData/googlefbl.csv'
+    def get_entries(self):
+        return self.entries
+
+    def is_date(self, date):
+        if date.count('-') == 2 and len(date) == 10 and date.find('-') == 2 and date.rfind('-') == 5:
+            return True
+        else:
+            return False
+
+    # def clear_entries(self):
+    #     self.entries = []
+
+    # def set_date(self, date):
+    #     self.date = (date - timedelta(days=1)).strftime('%m-%d-%Y')
+    def _get_date_for_save(self, days):
+        today = date.today() - timedelta(days=days)
+        return "{0}/{1}/{2}".format(today.year, today.month, today.day)
+
+    def save_csv(self, days):
+        today = self._get_date_for_save(int(days))
+        filename = "/Users/coreygood/Documents/GoodData/archive/{0}/googlefbl.csv".format(today)
         csvlist = []
         with open(filename, 'w') as csvwritefile:
             csvwriter = csv.writer(csvwritefile)
@@ -319,11 +563,3 @@ class MyParser(HTMLParser):
             for entry in self.entries:
                 csvwriter.writerow([entry[self.headers[0]], entry[self.headers[1]], entry[self.headers[2]], entry[self.headers[3]]])
 
-def main():
-    gmail = GmailApi()
-    gmail.get_hourly()
-    gmail.get_daily()
-    gmail.get_fbl()
-
-if __name__ == "__main__":
-    main()
