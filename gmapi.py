@@ -79,11 +79,11 @@ class GmailApi():
         # Build the Gmail service from discovery
         self.gmail_service = build('gmail', 'v1', http=self.http)
 
-    def get_daily(self):
+    def get_daily(self, days=0):
         print "Gathering daily query data"
-        self._get_daily_counts(self.DAILY_QUERIES, self._get_after_query())
+        self._get_daily_counts(self.DAILY_QUERIES, self._get_before_query(days), self._get_after_query(days), days)
 
-    def get_hourly(self):
+    def get_hourly(self, days=0):
         print "Gathering hourly query data"
         self._get_hourly_counts(self.HOURLY_QUERIES, self._get_before_query(), self._get_after_query(), False)
 
@@ -133,11 +133,11 @@ class GmailApi():
                 # else:
                 #     continue
 
-    def _get_daily_counts(self, queries, after):
+    def _get_daily_counts(self, queries, before, after, days):
         full_dict = dict()
-        full_dict = self._a_query(full_dict, queries['a2'], after, 'a2')
-        full_dict = self._a_query(full_dict, queries['a1'], after, 'a1')
-        self._save_daily_csv(full_dict)
+        full_dict = self._a_query(full_dict, queries['a2'], before, after, 'a2')
+        full_dict = self._a_query(full_dict, queries['a1'], before, after, 'a1')
+        self._save_daily_csv(days, full_dict)
 
     def _get_newsletter_daily_counts(self, queries, after):
         full_dict = dict()
@@ -149,12 +149,12 @@ class GmailApi():
         save_day = date.today() - timedelta(days=num_days)
         return "{0}/{1}/{2}".format(save_day.month, save_day.day, save_day.strftime('%y'))
 
-    def _get_date_for_save(self):
-        today = date.today()
+    def _get_date_for_save(self, days):
+        today = date.today() - timedelta(days=int(days))
         return "{0}/{1}/{2}".format(today.year, today.month, today.day)
 
-    def _save_daily_csv(self, full_dict):
-        today = self._get_date_for_save()
+    def _save_daily_csv(self, days, full_dict):
+        today = self._get_date_for_save(days)
         filename = "/Users/coreygood/Documents/GoodData/archive/{0}/InternalSpamDaily.csv".format(today)
         csvlist = []
         with open(filename, 'wb') as csvwritefile:
@@ -162,7 +162,8 @@ class GmailApi():
             # yest = date.today() - timedelta(days=1)
             # day = "{0}/{1}/{2}".format(yest.month, yest.day, yest.strftime('%y'))
             # date = self._get_date_for_small_save(num_days=1)
-            date = self._get_yesterday()
+            # date = self._get_yesterday()
+            date = self._subtract_days(int(days)+1)
             csvwriter.writerow(["userid", "dc(msgid)", "total_volume", "date"])
             # print full_dict
             temp_dict = sorted(full_dict.items(), key=lambda x: int(x[0]))
@@ -202,16 +203,16 @@ class GmailApi():
         #     csvsortwriter.writerow(["userid", "spam messages", "total messages", "date"])
         #     csvsortwriter.writerows(sortlist)
 
-    def _a_query(self, full_dict, query, after, query_key):
+    def _a_query(self, full_dict, query, before, after, query_key):
         message_list = []            
-        full_query = "{0}{1}".format(query, after)
-        # print full_query
+        full_query = "{0}{1}{2}".format(query, before, after)
+        print full_query
         response = self.gmail_service.users().messages().list(userId='me', q=full_query).execute()
         if 'messages' in response:
             message_list.extend(response['messages'])
             for message in message_list:
                 content = self.gmail_service.users().messages().get(userId='me', id=message['id'], format='full').execute()
-                # print content
+                print content
                 for part in content['payload']['parts']:
                     if part['mimeType'] == 'text/csv':
                         attachmentId = part['body']['attachmentId']
@@ -482,11 +483,13 @@ class GmailApi():
             print "No Gmail FBL Message Found on {0}.".format(current_date)
             return None
 
-    def _get_after_query(self):
-        return " after:{0}".format(self._get_yesterday())
+    def _get_after_query(self, days):
+        return " after:{0}".format(self._subtract_days(int(days)))
+        # return " after:{0}".format(self._get_yesterday())
 
-    def _get_before_query(self):
-        return " before:{0}".format(self._get_today())
+    def _get_before_query(self, days):
+        return " before:{0}".format(self._subtract_days(int(days)-1))
+        # return " before:{0}".format(self._get_today())
 
     def _fbl_after_query(self, days):
         return " after:{0}".format(self._subtract_days(int(days)))
